@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 
 	. "github.com/cloudfoundry/cf-acceptance-tests/cats_suite_helpers"
+	security_groups_test "github.com/cloudfoundry/cf-acceptance-tests/security_groups"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	. "github.com/onsi/gomega/gbytes"
@@ -13,6 +14,7 @@ import (
 	"github.com/cloudfoundry/cf-acceptance-tests/helpers/app_helpers"
 	"github.com/cloudfoundry/cf-acceptance-tests/helpers/assets"
 	"github.com/cloudfoundry/cf-acceptance-tests/helpers/random_name"
+	"github.com/cloudfoundry/cf-acceptance-tests/helpers/skip_messages"
 	"github.com/cloudfoundry/cf-acceptance-tests/helpers/v3_helpers"
 	"github.com/cloudfoundry/cf-test-helpers/v2/cf"
 	"github.com/cloudfoundry/cf-test-helpers/v2/helpers"
@@ -232,6 +234,69 @@ var _ = IsolationSegmentsDescribe("IsolationSegments", func() {
 				curlSession := helpers.CurlSkipSSL(Config.GetSkipSSLValidation(), host, "-H", hostHeader)
 				Eventually(curlSession).Should(Exit(0))
 				Expect(curlSession.Out).To(Say(binaryHi))
+			})
+		})
+
+		Context("c2c networking between 2 apps of the isolation segment", func() {
+			var serverAppName, clientAppName, serverIp string
+			var serverPort int
+
+			BeforeEach(func() {
+				if !Config.GetIncludeContainerNetworking() {
+					Skip(skip_messages.SkipContainerNetworkingMessage)
+				}
+
+				target := cf.Cf("target", "-o", orgName, "-s", spaceName).Wait()
+				Expect(target).To(Exit(0), "failed targeting")
+
+				serverAppName = random_name.CATSRandomName("APP")
+				clientAppName = random_name.CATSRandomName("APP")
+
+				Eventually(cf.Push(
+					serverAppName,
+					"-p", assets.NewAssets().Catnip,
+					"-m", DEFAULT_MEMORY_LIMIT,
+					"-b", Config.GetBinaryBuildpackName(),
+					"-c", "./catnip",
+					"-d", isoSegDomain),
+					Config.CfPushTimeoutDuration()).Should(Exit(0))
+
+				Eventually(cf.Push(
+					clientAppName,
+					"-p", assets.NewAssets().Catnip,
+					"-m", DEFAULT_MEMORY_LIMIT,
+					"-b", Config.GetBinaryBuildpackName(),
+					"-c", "./catnip",
+					"-d", isoSegDomain),
+					Config.CfPushTimeoutDuration()).Should(Exit(0))
+
+				serverIp, serverPort = security_groups_test.GetAppContainerIpAndPort(serverAppName, isoSegDomain)
+				security_groups_test.AssertNetworkingPreconditions(clientAppName, serverIp, serverPort)
+			})
+
+			AfterEach(func() {
+				app_helpers.AppReport(serverAppName)
+				Expect(cf.Cf("delete", serverAppName, "-f", "-r").Wait(Config.CfPushTimeoutDuration())).To(Exit(0))
+
+				app_helpers.AppReport(clientAppName)
+				Expect(cf.Cf("delete", clientAppName, "-f", "-r").Wait(Config.CfPushTimeoutDuration())).To(Exit(0))
+			})
+
+			It("supports c2c networking", func() {
+
+				By("adding policy")
+				workflowhelpers.AsUser(TestSetup.AdminUserContext(), Config.DefaultTimeoutDuration(), func() {
+					Expect(cf.Cf("target", "-o", orgName, "-s", spaceName).Wait()).To(Exit(0))
+					Expect(string(cf.Cf("network-policies").Wait().Out.Contents())).ToNot(ContainSubstring(serverAppName))
+					Expect(cf.Cf("add-network-policy", clientAppName, serverAppName, "--port", fmt.Sprintf("%d", serverPort), "--protocol", "tcp").Wait(Config.CfPushTimeoutDuration())).To(Exit(0))
+					Expect(string(cf.Cf("network-policies").Wait().Out.Contents())).To(ContainSubstring(serverAppName))
+				})
+
+				By("Testing that client app can connect to server app using the overlay")
+				Eventually(func() int {
+					catnipCurlResponse := security_groups_test.TestAppConnectivity(clientAppName, serverIp, serverPort)
+					return catnipCurlResponse.ReturnCode
+				}, "5s").Should(Equal(0), "policy is configured  but client app cannot talk to server app using overlay")
 			})
 		})
 	})

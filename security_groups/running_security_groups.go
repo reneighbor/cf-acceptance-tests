@@ -60,7 +60,7 @@ func pushApp(appName, buildpack string) {
 	).Wait()).To(Exit(0))
 }
 
-func getAppHostIpAndPort(appName string) (string, int) {
+func GetAppHostIpAndPort(appName string) (string, int) {
 	appGUID := app_helpers.GetAppGuid(appName)
 
 	cfResponse := cf.Cf("curl", fmt.Sprintf("/v3/apps/%s/processes/web/stats", appGUID)).Wait().Out.Contents()
@@ -71,14 +71,14 @@ func getAppHostIpAndPort(appName string) (string, int) {
 	return statsResponse.Resources[0].Host, statsResponse.Resources[0].Instance_ports[0].External
 }
 
-func testAppConnectivity(clientAppName string, privateHost string, privatePort int) CatnipCurlResponse {
+func TestAppConnectivity(clientAppName string, privateHost string, privatePort int) CatnipCurlResponse {
 	var catnipCurlResponse CatnipCurlResponse
 	curlResponse := helpers.CurlApp(Config, clientAppName, fmt.Sprintf("/curl/%s/%d", privateHost, privatePort))
 	json.Unmarshal([]byte(curlResponse), &catnipCurlResponse)
 	return catnipCurlResponse
 }
 
-func getAppContainerIpAndPort(appName string) (string, int) {
+func GetAppContainerIpAndPort(appName string) (string, int) {
 	curlResponse := helpers.CurlApp(Config, appName, "/myip")
 	containerIp := strings.TrimSpace(curlResponse)
 
@@ -128,7 +128,7 @@ func unbindSecurityGroup(securityGroupName, orgName, spaceName string) {
 	})
 }
 
-func deleteSecurityGroup(securityGroupName string) {
+func DeleteSecurityGroup(securityGroupName string) {
 	workflowhelpers.AsUser(TestSetup.AdminUserContext(), Config.DefaultTimeoutDuration(), func() {
 		Expect(cf.Cf("delete-security-group", securityGroupName, "-f").Wait()).To(Exit(0))
 	})
@@ -158,29 +158,29 @@ func getStagingOutput(appName string) func() *Session {
 	}
 }
 
-func pushServerApp() (serverAppName string, privateHost string, privatePort int) {
+func PushServerApp() (serverAppName string, privateHost string, privatePort int) {
 	serverAppName = random_name.CATSRandomName("APP")
 	pushApp(serverAppName, Config.GetBinaryBuildpackName())
 	Expect(cf.Cf("start", serverAppName).Wait(Config.CfPushTimeoutDuration())).To(Exit(0))
 
-	privateHost, privatePort = getAppHostIpAndPort(serverAppName)
+	privateHost, privatePort = GetAppHostIpAndPort(serverAppName)
 	return
 }
 
-func pushClientApp() (clientAppName string) {
+func PushClientApp() (clientAppName string) {
 	clientAppName = random_name.CATSRandomName("APP")
 	pushApp(clientAppName, Config.GetBinaryBuildpackName())
 	Expect(cf.Cf("start", clientAppName).Wait(Config.CfPushTimeoutDuration())).To(Exit(0))
 	return
 }
 
-func assertNetworkingPreconditions(clientAppName string, privateHost string, privatePort int) {
+func AssertNetworkingPreconditions(clientAppName string, privateHost string, privatePort int) {
 	By("Asserting default running security group configuration for traffic between containers")
-	catnipCurlResponse := testAppConnectivity(clientAppName, privateHost, privatePort)
+	catnipCurlResponse := TestAppConnectivity(clientAppName, privateHost, privatePort)
 	Expect(catnipCurlResponse.ReturnCode).NotTo(Equal(0), "Expected default running security groups not to allow internal communication between app containers. Configure your running security groups to not allow traffic on internal networks, or disable this test by setting 'include_security_groups' to 'false' in '"+os.Getenv("CONFIG")+"'.")
 
 	By("Asserting default running security group configuration from a running container to an external destination")
-	catnipCurlResponse = testAppConnectivity(clientAppName, "www.google.com", 80)
+	catnipCurlResponse = TestAppConnectivity(clientAppName, "www.google.com", 80)
 	Expect(catnipCurlResponse.ReturnCode).To(Equal(0), "Expected default running security groups to allow external traffic from app containers. Configure your running security groups to not allow traffic on internal networks, or disable this test by setting 'include_security_groups' to 'false' in '"+os.Getenv("CONFIG")+"'.")
 }
 
@@ -200,9 +200,9 @@ var _ = SecurityGroupsDescribe("App Instance Networking", func() {
 			orgName = TestSetup.RegularUserContext().Org
 			spaceName = TestSetup.RegularUserContext().Space
 
-			serverAppName, privateHost, privatePort = pushServerApp()
-			clientAppName = pushClientApp()
-			assertNetworkingPreconditions(clientAppName, privateHost, privatePort)
+			serverAppName, privateHost, privatePort = PushServerApp()
+			clientAppName = PushClientApp()
+			AssertNetworkingPreconditions(clientAppName, privateHost, privatePort)
 		})
 
 		AfterEach(func() {
@@ -212,7 +212,7 @@ var _ = SecurityGroupsDescribe("App Instance Networking", func() {
 			app_helpers.AppReport(clientAppName)
 			Expect(cf.Cf("delete", clientAppName, "-f", "-r").Wait(Config.CfPushTimeoutDuration())).To(Exit(0))
 
-			deleteSecurityGroup(securityGroupName)
+			DeleteSecurityGroup(securityGroupName)
 		})
 
 		It("correctly configures asgs and c2c policy independent of each other", func() {
@@ -230,13 +230,13 @@ var _ = SecurityGroupsDescribe("App Instance Networking", func() {
 			Expect(cf.Cf("restart", clientAppName).Wait(Config.CfPushTimeoutDuration())).To(Exit(0))
 
 			By("Testing that client app cannot connect to the server app using the overlay")
-			containerIp, containerPort := getAppContainerIpAndPort(serverAppName)
-			catnipCurlResponse := testAppConnectivity(clientAppName, containerIp, containerPort)
+			containerIp, containerPort := GetAppContainerIpAndPort(serverAppName)
+			catnipCurlResponse := TestAppConnectivity(clientAppName, containerIp, containerPort)
 			Expect(catnipCurlResponse.ReturnCode).NotTo(Equal(0), "no policy configured but client app can talk to server app using overlay")
 
 			By("Testing that external connectivity to a private ip is not refused (but may be unreachable for other reasons)")
 			Eventually(func() string {
-				resp := testAppConnectivity(clientAppName, privateAddress, 80)
+				resp := TestAppConnectivity(clientAppName, privateAddress, 80)
 				return resp.Stderr
 			}, 3*time.Minute).Should(MatchRegexp("Connection timed out after|No route to host"), "wide-open ASG configured but app is still refused by private ip")
 
@@ -250,7 +250,7 @@ var _ = SecurityGroupsDescribe("App Instance Networking", func() {
 
 			By("Testing that client app can connect to server app using the overlay")
 			Eventually(func() int {
-				catnipCurlResponse = testAppConnectivity(clientAppName, containerIp, containerPort)
+				catnipCurlResponse = TestAppConnectivity(clientAppName, containerIp, containerPort)
 				return catnipCurlResponse.ReturnCode
 			}, "5s").Should(Equal(0), "policy is configured + wide-open asg but client app cannot talk to server app using overlay")
 
@@ -263,13 +263,13 @@ var _ = SecurityGroupsDescribe("App Instance Networking", func() {
 
 			By("Testing that client app can still connect to server app using the overlay")
 			Eventually(func() int {
-				catnipCurlResponse = testAppConnectivity(clientAppName, containerIp, containerPort)
+				catnipCurlResponse = TestAppConnectivity(clientAppName, containerIp, containerPort)
 				return catnipCurlResponse.ReturnCode
 			}, 3*time.Minute).Should(Equal(0), "policy is configured, asgs are not but client app cannot talk to server app using overlay")
 
 			By("Testing that external connectivity to a private ip is refused")
 			Eventually(func() string {
-				resp := testAppConnectivity(clientAppName, privateAddress, 80)
+				resp := TestAppConnectivity(clientAppName, privateAddress, 80)
 				return resp.Stderr
 			}, 3*time.Minute).Should(MatchRegexp("refused|No route to host|Connection timed out"))
 
@@ -283,7 +283,7 @@ var _ = SecurityGroupsDescribe("App Instance Networking", func() {
 
 			By("Testing the client app cannot connect to the server app using the overlay")
 			Eventually(func() int {
-				catnipCurlResponse = testAppConnectivity(clientAppName, containerIp, containerPort)
+				catnipCurlResponse = TestAppConnectivity(clientAppName, containerIp, containerPort)
 				return catnipCurlResponse.ReturnCode
 			}, 3*time.Minute).ShouldNot(Equal(0), "no policy is configured but client app can talk to server app using overlay")
 		})
@@ -294,7 +294,7 @@ var _ = SecurityGroupsDescribe("App Instance Networking", func() {
 		var testAppName, buildpack string
 
 		BeforeEach(func() {
-			serverAppName, privateHost, privatePort = pushServerApp()
+			serverAppName, privateHost, privatePort = PushServerApp()
 
 			By("Asserting default staging security group configuration")
 			testAppName = random_name.CATSRandomName("APP")

@@ -16,5 +16,5 @@ func (uriCreator *AppUriCreator) AppUri(appName string, path string) string {
 		subdomain = appName + "."
 	}
 
-	return uriCreator.CurlConfig.Protocol() + subdomain + uriCreator.CurlConfig.GetAppsDomain() + path
+	return uriCreator.CurlConfig.Protocol() + subdomain + "iso-seg." + uriCreator.CurlConfig.GetAppsDomain() + path
 }
